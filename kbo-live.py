@@ -170,7 +170,7 @@ STADIUM_URL_MAP = {
     "광주": _get_url("Gwangju"),
     "목동": _get_url("Mokdong"),
     "경산": _get_url("SamsungMinor") or _get_url("Gyeongsan"),
-    "이천 (두산)": _get_url("DoosanMinors")
+    "이천 (두산)": _get_url("DoosanMinors"),
     "⚙️ 사용자 직접 URL 입력": "CUSTOM"
 }
 try:
