@@ -122,9 +122,9 @@ if not st.session_state['authenticated']:
         with col_l2:
             st.markdown("""
             <div class="login-container">
-                <h2 style="color: #00a6fb; margin-bottom: 5px; text-align: center;">⚾ NC Dinos 마산 라이브 분석 시스템</h2>
+                <h2 style="color: #00a6fb; margin-bottom: 5px; text-align: center;">⚾ 라이브 대시보드 시스템</h2>
                 <p style="color: #8d99ae; font-size: 14px; text-align: center; margin-bottom: 25px;">
-                    실시간 트랙맨 투구 데이터 및 ML 구종 예측 대시보드
+                    실시간 투구 데이터 및 구종 예측
                 </p>
             </div>
             """, unsafe_allow_html=True)
@@ -1385,7 +1385,7 @@ def fetch_today_game_schedule_from_db_or_csv(stadium_name: str = "마산") -> Op
 # ==============================================================================
 model_engine = get_prediction_model()
 
-st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/e/e0/NC_Dinos_logo.svg", width=170)
+st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/e/e0/logo.svg", width=170)
 st.sidebar.title("⚡ 실시간 대시보드 제어")
 
 user_id_str = st.session_state.get('user_id', 'User')
@@ -1609,7 +1609,7 @@ else:
 
 col_h1, col_h2 = st.columns([3, 1])
 with col_h1:
-    st.title(f"⚾ [{selected_stadium_name}] 라이브 투구 실시간 분석 & ML 예측")
+    st.title(f"⚾ [{selected_stadium_name}] 라이브 투구 실시간")
 
 with col_h2:
     status_class = "status-live" if is_live_active else "status-offline"
@@ -1659,7 +1659,7 @@ with sheet_tab1:
                 backgroundColor: '#ffffff'
             }).then(function(canvas) {
                 var link = document.createElement('a');
-                link.download = 'NC_Dinos_Pitch_Report.jpeg';
+                link.download = 'Pitch_Report.jpeg';
                 link.href = canvas.toDataURL('image/jpeg', 0.95);
                 link.click();
             });
