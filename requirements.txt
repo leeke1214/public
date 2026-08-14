@@ -1,0 +1,11 @@
+streamlit
+pandas
+numpy
+requests
+beautifulsoup4
+lxml
+pymysql
+plotly
+scipy
+python-dotenv
+python-docx
