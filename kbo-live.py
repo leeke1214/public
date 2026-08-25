@@ -5,7 +5,8 @@ import glob
 import csv
 import time
 import logging
-from datetime import datetime
+from urllib.parse import urlparse
+from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 
 import numpy as np
@@ -502,25 +503,91 @@ class DataProcessor:
     def safe_str(value: Any, default: str = "") -> str:
         return str(value) if value is not None else default
 
+def get_base_origin(url: str) -> str:
+    """/livedashboard 같은 하위 경로가 붙어 있어도 http://host:port 형태의 루트 Origin만 추출"""
+    if not url:
+        return ""
+    url = url.strip()
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        url = "http://" + url
+        parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
 def fetch_live_session_id(base_url: str) -> Optional[str]:
     if not base_url:
         return None
-    try:
-        url = f"{base_url.rstrip('/')}/sessionmanager/api/sessionmode/"
-        response = requests.get(url, timeout=4)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("sessionId")
-    except Exception:
+    
+    origin = get_base_origin(base_url)
+    if not origin:
         return None
+
+    headers = {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    }
+    params = {'_': int(time.time() * 1000)}
+
+    # 1. 표준 sessionmode API 호출
+    try:
+        url = f"{origin}/sessionmanager/api/sessionmode/"
+        response = requests.get(url, headers=headers, params=params, timeout=4)
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, dict):
+                sid = data.get("sessionId") or data.get("id") or data.get("currentSessionId")
+                if sid:
+                    return str(sid)
+    except Exception:
+        pass
+
+    # 2. metadata API 또는 active session API 호출
+    for endpoint in ["/sessionmanager/api/active/", "/sessionmanager/api/metadata/"]:
+        try:
+            url = f"{origin}{endpoint}"
+            response = requests.get(url, headers=headers, params=params, timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, dict):
+                    sid = data.get("sessionId") or data.get("id")
+                    if sid:
+                        return str(sid)
+        except Exception:
+            pass
+
+    # 3. HTML/JS 웹페이지(/livedashboard 등) 소스 코드에서 UUID 패턴 정규식 탐색
+    for page_path in ["/livedashboard", "/"]:
+        try:
+            page_url = f"{origin}{page_path}"
+            response = requests.get(page_url, headers=headers, params=params, timeout=4)
+            if response.status_code == 200:
+                uuids = re.findall(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', response.text, re.I)
+                if uuids:
+                    return uuids[0]
+        except Exception:
+            pass
+
+    return None
 
 def fetch_review_data(base_url: str, session_id: str, retries: int = 3) -> Optional[Dict]:
     if not base_url or not session_id:
         return None
-    url = f"{base_url.rstrip('/')}/taggingapp/api/review/{session_id}"
+    origin = get_base_origin(base_url)
+    url = f"{origin}/taggingapp/api/review/{session_id}"
+    
+    headers = {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    }
+    params = {'_': int(time.time() * 1000)}
+
     for attempt in range(retries):
         try:
-            response = requests.get(url, timeout=6)
+            response = requests.get(url, headers=headers, params=params, timeout=6)
             response.raise_for_status()
             return response.json()
         except Exception:
@@ -542,7 +609,6 @@ def parse_trackman_json(raw_json: Dict, model_engine: PitchPredictionModel, sess
     if not plays:
         return pd.DataFrame()
 
-    # tagging-ML-to-hyper202606.py 참고: 세션 캐시 및 수신된 unique play_id 목록 관리 (중복/재계산 방지)
     cache_session_key = "live_cache_session_id"
     cache_ids_key = "live_cache_processed_ids"
     cache_df_key = "live_cache_df"
@@ -579,7 +645,6 @@ def parse_trackman_json(raw_json: Dict, model_engine: PitchPredictionModel, sess
         if pitch_call == 'Undefined':
             continue
 
-        # tagging-ML-to-hyper202606.py 방식: 이미 처리된 play_id는 0초 스킵
         play_id = dp.safe_get(play, ['id'], '')
         if play_id and play_id in processed_ids:
             continue
@@ -615,7 +680,6 @@ def parse_trackman_json(raw_json: Dict, model_engine: PitchPredictionModel, sess
         hit_data = {} if ball_finals2 is None else ball_finals2.get("hit", {}) or {}
 
         strike_locations = dp.safe_get(strikezonedecision, ['strikeZoneDecisionLocations'], [])
-        front_zone = next((loc for loc in strike_locations if dp.safe_get(loc, ['strikeZoneLocationType'], '') == 'Front'), {})
         middle_zone = next((loc for loc in strike_locations if dp.safe_get(loc, ['strikeZoneLocationType'], '') == 'Middle'), {})
         back_zone = next((loc for loc in strike_locations if dp.safe_get(loc, ['strikeZoneLocationType'], '') == 'Back'), {})
 
@@ -629,14 +693,37 @@ def parse_trackman_json(raw_json: Dict, model_engine: PitchPredictionModel, sess
         horz_break = dp.safe_float(movement_data.get("horizontal", 0.0)) * 100
         induced_vert_break = dp.safe_float(movement_data.get("inducedVertical", 0.0)) * 100
         
-        plate_loc_height = dp.safe_float(position_data.get("y", 0.0)) * 100
-        plate_loc_side = dp.safe_float(position_data.get("z", 0.0)) * 100
-        
-        mid_loc_height = dp.safe_float(dp.safe_get(middle_zone, ['ballY'], 0.0)) * 100 if middle_zone else plate_loc_height
-        mid_loc_side = dp.safe_float(dp.safe_get(middle_zone, ['ballX'], 0.0)) * 100 if middle_zone else plate_loc_side
-        
-        back_loc_height = dp.safe_float(dp.safe_get(back_zone, ['ballY'], 0.0)) * 100 if back_zone else plate_loc_height
-        back_loc_side = dp.safe_float(dp.safe_get(back_zone, ['ballX'], 0.0)) * 100 if back_zone else plate_loc_side
+        # ─── Front, Middle, Back 공 위치 (좌우: X, 높이: Y) ───
+        f_ball_x = dp.safe_get(strikezonedecision, ['ballX'], None)
+        f_ball_y = dp.safe_get(strikezonedecision, ['ballY'], None)
+
+        if f_ball_x is not None:
+            plate_loc_side = dp.safe_float(f_ball_x) * 100.0
+        elif location_data.get("side") is not None:
+            plate_loc_side = dp.safe_float(location_data.get("side")) * 100.0
+        elif position_data.get("z") is not None:
+            plate_loc_side = dp.safe_float(position_data.get("z")) * 100.0
+        else:
+            plate_loc_side = 0.0
+
+        if f_ball_y is not None:
+            plate_loc_height = dp.safe_float(f_ball_y) * 100.0
+        elif location_data.get("height") is not None:
+            plate_loc_height = dp.safe_float(location_data.get("height")) * 100.0
+        elif position_data.get("y") is not None:
+            plate_loc_height = dp.safe_float(position_data.get("y")) * 100.0
+        else:
+            plate_loc_height = 0.0
+
+        m_ball_x = dp.safe_get(middle_zone, ['ballX'], None)
+        m_ball_y = dp.safe_get(middle_zone, ['ballY'], None)
+        mid_loc_side = dp.safe_float(m_ball_x) * 100.0 if m_ball_x is not None else plate_loc_side
+        mid_loc_height = dp.safe_float(m_ball_y) * 100.0 if m_ball_y is not None else plate_loc_height
+
+        b_ball_x = dp.safe_get(back_zone, ['ballX'], None)
+        b_ball_y = dp.safe_get(back_zone, ['ballY'], None)
+        back_loc_side = dp.safe_float(b_ball_x) * 100.0 if b_ball_x is not None else plate_loc_side
+        back_loc_height = dp.safe_float(b_ball_y) * 100.0 if b_ball_y is not None else plate_loc_height
 
         vert_appr_angle = dp.safe_float(velocity_data.get("verticalAngle", 0.0))
         horz_appr_angle = dp.safe_float(location_data.get("horizontalAngle", 0.0))
@@ -678,20 +765,25 @@ def parse_trackman_json(raw_json: Dict, model_engine: PitchPredictionModel, sess
         sz_bottom = batter_height * 0.2704
         sz_top = batter_height * 0.5575
 
-        f_top = dp.safe_float(dp.safe_get(front_zone, ['top'], 0.0)) * 100 if front_zone.get('top') else sz_top
-        f_bot = dp.safe_float(dp.safe_get(front_zone, ['bottom'], 0.0)) * 100 if front_zone.get('bottom') else sz_bottom
-        f_left = dp.safe_float(dp.safe_get(front_zone, ['left'], 0.0)) * 100 if front_zone.get('left') else -21.59
-        f_right = dp.safe_float(dp.safe_get(front_zone, ['right'], 0.0)) * 100 if front_zone.get('right') else 21.59
+        # ─── Front, Middle, Back S-Zone dimensions (left, right, top, bottom) ───
+        sz_dim = dp.safe_get(strikezonedecision, ['dimensions'], {})
+        sz_m_dim = dp.safe_get(middle_zone, ['dimensions'], {})
+        sz_b_dim = dp.safe_get(back_zone, ['dimensions'], {})
 
-        m_top = dp.safe_float(dp.safe_get(middle_zone, ['top'], 0.0)) * 100 if middle_zone.get('top') else sz_top
-        m_bot = dp.safe_float(dp.safe_get(middle_zone, ['bottom'], 0.0)) * 100 if middle_zone.get('bottom') else sz_bottom
-        m_left = dp.safe_float(dp.safe_get(middle_zone, ['left'], 0.0)) * 100 if middle_zone.get('left') else -21.59
-        m_right = dp.safe_float(dp.safe_get(middle_zone, ['right'], 0.0)) * 100 if middle_zone.get('right') else 21.59
+        f_top = dp.safe_float(sz_dim.get('top', 0.0)) * 100.0 if sz_dim.get('top') else sz_top
+        f_bot = dp.safe_float(sz_dim.get('bottom', 0.0)) * 100.0 if sz_dim.get('bottom') else sz_bottom
+        f_left = dp.safe_float(sz_dim.get('left', 0.0)) * 100.0 if sz_dim.get('left') else -23.59
+        f_right = dp.safe_float(sz_dim.get('right', 0.0)) * 100.0 if sz_dim.get('right') else 23.59
 
-        b_top = dp.safe_float(dp.safe_get(back_zone, ['top'], 0.0)) * 100 if back_zone.get('top') else sz_top
-        b_bot = dp.safe_float(dp.safe_get(back_zone, ['bottom'], 0.0)) * 100 if back_zone.get('bottom') else sz_bottom
-        b_left = dp.safe_float(dp.safe_get(back_zone, ['left'], 0.0)) * 100 if back_zone.get('left') else -21.59
-        b_right = dp.safe_float(dp.safe_get(back_zone, ['right'], 0.0)) * 100 if back_zone.get('right') else 21.59
+        m_top = dp.safe_float(sz_m_dim.get('top', 0.0)) * 100.0 if sz_m_dim.get('top') else f_top
+        m_bot = dp.safe_float(sz_m_dim.get('bottom', 0.0)) * 100.0 if sz_m_dim.get('bottom') else f_bot
+        m_left = dp.safe_float(sz_m_dim.get('left', 0.0)) * 100.0 if sz_m_dim.get('left') else f_left
+        m_right = dp.safe_float(sz_m_dim.get('right', 0.0)) * 100.0 if sz_m_dim.get('right') else f_right
+
+        b_top = dp.safe_float(sz_b_dim.get('top', 0.0)) * 100.0 if sz_b_dim.get('top') else f_top
+        b_bot = dp.safe_float(sz_b_dim.get('bottom', 0.0)) * 100.0 if sz_b_dim.get('bottom') else f_bot
+        b_left = dp.safe_float(sz_b_dim.get('left', 0.0)) * 100.0 if sz_b_dim.get('left') else f_left
+        b_right = dp.safe_float(sz_b_dim.get('right', 0.0)) * 100.0 if sz_b_dim.get('right') else f_right
 
         row_dict = {
             "PitchNo": play_idx,
@@ -1043,7 +1135,7 @@ def create_3d_strike_zone(target_row: pd.Series) -> tuple[go.Figure, bool]:
         fig.add_trace(go.Scatter3d(
             x=[bx], y=[by], z=[bz + 4],
             mode='text',
-            text=[f"{lbl} [{bz:.0f}, {bx:.0f}]"],
+            text=[f"{lbl} [{bx:+.0f}, {bz:.0f}]"],
             textposition="top center",
             textfont=dict(color="white", size=10, family="Arial"),
             showlegend=False
@@ -1098,8 +1190,8 @@ def create_2d_szone_plots(target_row: pd.Series):
     sz_b = safe_num(target_row.get("strikeZoneBottom"), 48.6)
     sz_t = safe_num(target_row.get("strikeZoneTop"), 100.3)
 
-    m_left = safe_num(target_row.get("MiddleStrikeZoneLeft"), -21.59)
-    m_right = safe_num(target_row.get("MiddleStrikeZoneRight"), 21.59)
+    m_left = safe_num(target_row.get("MiddleStrikeZoneLeft"), -23.59)
+    m_right = safe_num(target_row.get("MiddleStrikeZoneRight"), 23.59)
     m_bot = safe_num(target_row.get("MiddleStrikeZoneBottom"), sz_b)
     m_top = safe_num(target_row.get("MiddleStrikeZoneTop"), sz_t)
 
@@ -1113,8 +1205,8 @@ def create_2d_szone_plots(target_row: pd.Series):
     m_x = safe_num(target_row.get("MiddlePlateLocSide"), f_x)
     m_z = safe_num(target_row.get("MiddlePlateLocHeight"), f_z)
 
-    b_left = safe_num(target_row.get("BackStrikeZoneLeft"), -21.59)
-    b_right = safe_num(target_row.get("BackStrikeZoneRight"), 21.59)
+    b_left = safe_num(target_row.get("BackStrikeZoneLeft"), -23.59)
+    b_right = safe_num(target_row.get("BackStrikeZoneRight"), 23.59)
     b_bot = safe_num(target_row.get("BackStrikeZoneBottom"), m_bot)
     b_top = safe_num(target_row.get("BackStrikeZoneTop"), m_top)
     b_x = safe_num(target_row.get("BackPlateLocSide"), f_x)
@@ -1143,27 +1235,39 @@ def create_2d_szone_plots(target_row: pd.Series):
         # 3. 중앙 0cm 가이드 점선
         fig.add_vline(x=0, line_dash="dash", line_color="gray", line_width=1)
 
-        # 4. 투구 통과 위치 마커
+        # 4. 투구 통과 위치 마커 (좌우: X, 높이: Y)
         fig.add_trace(go.Scatter(
             x=[x_val], y=[z_val],
             mode='markers+text',
             marker=dict(size=14, color=pitch_color, symbol=pitch_symbol),
-            text=[f"[{z_val:.0f}, {x_val:.0f}]"],
+            text=[f"[{x_val:+.0f}, {z_val:.0f}]"],
+            hovertemplate=f"<b>{pitch_type}</b><br>좌우(Side): %{{x:+.1f}} cm<br>높이(Height): %{{y:.1f}} cm<extra></extra>",
             textposition="top right",
             name=pitch_type
         ))
 
+        # 5. 축 범위 넉넉하게 확장 (축소 1단계 수준: 좌우 -80~80cm, 높이 -15~175cm)
+        x_min = min(-80.0, x_val - 10) if x_val is not None else -80.0
+        x_max = max(80.0, x_val + 10) if x_val is not None else 80.0
+        z_min = min(-15.0, z_val - 10) if z_val is not None else -15.0
+        z_max = max(175.0, z_val + 10) if z_val is not None else 175.0
+
         fig.update_layout(
             title=dict(text=f"<b>{title_text}</b> <span style='font-size:0.8rem;color:gray;'>{subtitle_text}</span>", font=dict(size=13)),
             xaxis=dict(
-                range=[-60, 60],
-                tickvals=[-40, -20, 0, 20, 40],
-                ticktext=["-40", "-20", "0", "20", "40"],
+                range=[x_min, x_max],
+                tickvals=[-80, -60, -40, -20, 0, 20, 40, 60, 80],
+                ticktext=["-80", "-60", "-40", "-20", "0", "20", "40", "60", "80"],
                 showgrid=True,
                 gridcolor='#eeeeee',
                 title="좌우 (cm)"
             ),
-            yaxis=dict(range=[0, 150], showgrid=True, gridcolor='#eeeeee', title="높이 (cm)"),
+            yaxis=dict(
+                range=[z_min, z_max],
+                showgrid=True,
+                gridcolor='#eeeeee',
+                title="높이 (cm)"
+            ),
             height=290,
             margin=dict(l=20, r=20, t=30, b=20),
             showlegend=False
@@ -1492,7 +1596,7 @@ if "🔴 실시간" in data_source_mode:
     default_auto_ref = True if auto_start_triggered else True
     auto_refresh_enabled = st.sidebar.checkbox("⚡ 데이터 들어올 때마다 자동 반영", value=default_auto_ref)
     refresh_interval = st.sidebar.select_slider("감지 주기 (초)", options=[1, 2, 3, 5, 10], value=5)
-    only_today_pitches = st.sidebar.checkbox("📅 오늘(Today) 경기 투구만 보기", value=True)
+    only_today_pitches = st.sidebar.checkbox("📅 오늘(Today) 경기 투구만 보기", value=False)
 
 df = pd.DataFrame()
 session_id_input = ""
@@ -1530,10 +1634,13 @@ if "🔴 실시간" in data_source_mode:
                 if not df_today.empty:
                     df = df_today
 
-            if 'prev_pitch_count' in st.session_state:
-                if len(df) > st.session_state['prev_pitch_count']:
-                    st.toast(f"⚡ [{selected_stadium_name}] 신규 투구 수신! (총 {len(df)}구)", icon="⚾")
-            st.session_state['prev_pitch_count'] = len(df)
+            sess_count_key = f"prev_count_{session_id_input}"
+            if sess_count_key in st.session_state:
+                prev_cnt = st.session_state[sess_count_key]
+                if len(df) > prev_cnt:
+                    added_cnt = len(df) - prev_cnt
+                    st.toast(f"⚡ [{selected_stadium_name}] 신규 투구 수신! (+{added_cnt}구 / 총 {len(df)}구)", icon="⚾")
+            st.session_state[sess_count_key] = len(df)
             st.sidebar.info(f"📊 [{selected_stadium_name}] 총 {len(df)}개 투구 데이터 수신")
         elif "live_cache_df" in st.session_state and not st.session_state["live_cache_df"].empty:
             # 💡 일시적 통신 순간 지연/타임아웃 발생 시 기존 캐시 데이터 유지 (F5 새로고침 없이 자동 복구)
@@ -1543,59 +1650,30 @@ if "🔴 실시간" in data_source_mode:
             st.sidebar.warning("세션 데이터를 불러오지 못했습니다. 구장 웹주소 및 Session ID를 확인하세요.")
 
 # ------------------------------------------------------------------------------
-# 10분/1시간 데이터 비활성 타임아웃 관리 (10분: Auto-Pause 일시정지, 1시간: Auto-Shutdown 프로세스 종료)
+# 비활성 상태 안내 (실시간 감지는 중단 없이 계속 유지)
 # ------------------------------------------------------------------------------
 st.sidebar.markdown("---")
-st.sidebar.subheader("🛡️ 비활성 타임아웃 제어")
-enable_inactivity_protection = st.sidebar.checkbox("⚡ 10분 정지 / 1시간 자동종료 사용", value=True)
-
 now_time = datetime.now()
 if 'last_pitch_change_time' not in st.session_state:
     st.session_state['last_pitch_change_time'] = now_time
 
-if 'last_pitch_count_tracker' not in st.session_state:
-    st.session_state['last_pitch_count_tracker'] = 0
+sess_tracker_key = f"last_pitch_count_{session_id_input}" if session_id_input else 'last_pitch_count_tracker'
+if sess_tracker_key not in st.session_state:
+    st.session_state[sess_tracker_key] = 0
 
 current_pitch_cnt = len(df) if not df.empty else 0
 
 # 신규 투구가 들어왔을 때 타임스탬프 갱신
-if current_pitch_cnt > st.session_state['last_pitch_count_tracker']:
-    st.session_state['last_pitch_count_tracker'] = current_pitch_cnt
+if current_pitch_cnt > st.session_state[sess_tracker_key]:
+    st.session_state[sess_tracker_key] = current_pitch_cnt
     st.session_state['last_pitch_change_time'] = now_time
 
 # 타임스탬프 기반 비활성 시간 계산 (분 단위)
 if current_pitch_cnt > 0:
     inactive_minutes = (now_time - st.session_state['last_pitch_change_time']).total_seconds() / 60.0
-else:
-    inactive_minutes = 0.0
-
-if enable_inactivity_protection and is_live_active and current_pitch_cnt > 0:
     st.sidebar.caption(f"⏱️ 마지막 투구 경과: `{inactive_minutes:.1f}분` 전")
-    
-    # 1) 1시간(60분) 이상 데이터 업데이트 없음 -> 대시보드 및 백그라운드 프로세스 자동 종료
-    if inactive_minutes >= 60.0:
-        now_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        print("\n" + "=" * 80, flush=True)
-        print(f"[{now_time_str}] 🛑 [자동 종료] 1시간(60분) 동안 신규 투구 데이터가 수신되지 않아 Streamlit 서버 및 프로세스를 자동 종료합니다.", flush=True)
-        print("=" * 80 + "\n", flush=True)
-        
-        st.sidebar.error("🛑 [자동 종료] 1시간 이상 신규 투구가 없어 대시보드가 자동 종료되었습니다.")
-        st.error("🛑 1시간 이상 투구 데이터 업데이트가 없어 프로세스가 자동 종료되었습니다.")
-        
-        # 브라우저 웹 창 자동 닫기 시도
-        try:
-            import streamlit.components.v1 as components
-            components.html("<script>window.close();</script>", height=0)
-        except Exception:
-            pass
-
-        time.sleep(1)
-        os._exit(0)
-    
-    # 2) 10분 이상 데이터 업데이트 없음 -> 실시간 감지 일시 정지 (Auto-Pause)
-    elif inactive_minutes >= 10.0:
-        auto_refresh_enabled = False
-        st.sidebar.warning(f"⏸️ [일시 정지] 10분 이상 신규 투구가 없습니다.\n(감지 일시정지: {inactive_minutes:.1f}분 비활성)")
+    if inactive_minutes >= 10.0:
+        st.sidebar.info(f"⏳ 이닝 교대/대기 중 (감지 루프 계속 실행 중: {inactive_minutes:.1f}분)")
 
 else:
     uploaded_file = st.sidebar.file_uploader("Trackman CSV 데이터 파일 업로드", type=["csv"])
