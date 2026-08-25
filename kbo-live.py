@@ -1627,12 +1627,12 @@ if "🔴 실시간" in data_source_mode:
         if raw_json:
             df = parse_trackman_json(raw_json, model_engine, session_id=session_id_input)
             
-            # 💡 동일 세션에 이전 날짜 데이터가 누적된 경우 '오늘(Today) 투구만 보기' 적용
-            if only_today_pitches and not df.empty and "Date" in df.columns:
-                today_str = datetime.now().strftime("%Y-%m-%d")
-                df_today = df[df["Date"] == today_str]
-                if not df_today.empty:
-                    df = df_today
+            # # 💡 동일 세션에 이전 날짜 데이터가 누적된 경우 '오늘(Today) 투구만 보기' 적용
+            # if only_today_pitches and not df.empty and "Date" in df.columns:
+            #     today_str = datetime.now().strftime("%Y-%m-%d")
+            #     df_today = df[df["Date"] == today_str]
+            #     if not df_today.empty:
+            #         df = df_today
 
             sess_count_key = f"prev_count_{session_id_input}"
             if sess_count_key in st.session_state:
