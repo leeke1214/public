@@ -1489,7 +1489,7 @@ def fetch_today_game_schedule_from_db_or_csv(stadium_name: str = "마산") -> Op
 # ==============================================================================
 model_engine = get_prediction_model()
 
-st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/e/e0/logo.svg", width=170)
+# st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/e/e0/logo.svg", width=170)
 st.sidebar.title("⚡ 실시간 대시보드 제어")
 
 user_id_str = st.session_state.get('user_id', 'User')
@@ -1596,7 +1596,7 @@ if "🔴 실시간" in data_source_mode:
     default_auto_ref = True if auto_start_triggered else True
     auto_refresh_enabled = st.sidebar.checkbox("⚡ 데이터 들어올 때마다 자동 반영", value=default_auto_ref)
     refresh_interval = st.sidebar.select_slider("감지 주기 (초)", options=[1, 2, 3, 5, 10], value=5)
-    only_today_pitches = st.sidebar.checkbox("📅 오늘(Today) 경기 투구만 보기", value=False)
+    # only_today_pitches = st.sidebar.checkbox("📅 오늘(Today) 경기 투구만 보기", value=False)
 
 df = pd.DataFrame()
 session_id_input = ""
@@ -1718,7 +1718,7 @@ sheet_tab1, sheet_tab2, sheet_tab3 = st.tabs(["📊 투구별", "📈 graph", "�
 with sheet_tab1:
     col_t1, col_t2 = st.columns([3, 1])
     with col_t1:
-        st.subheader("⚾ 개별 투구 상세 지표 & 3D/2D 스트라이크 존 시각화")
+        st.subheader("⚾ 개별 투구 상세 지표 & 스트라이크 존")
     with col_t2:
         # 📸 상단 페이지 전체 원클릭 캡처/다운로드 버튼 (html2canvas)
         components.html("""
@@ -1745,7 +1745,7 @@ with sheet_tab1:
         </script>
         """, height=40)
 
-    st.caption("💡 12개 수치 지표 카드, 3D 스트라이크 존, 2D 1x3 분할 존을 한 번에 확인하실 수 있습니다. (상단 📸 버튼 누르면 화면 전체 캡처 이미지 즉시 저장)")
+    st.caption("💡 상단 📸 버튼을 누르면 고화질 리포트 이미지가 저장됩니다.")
     
     # 드롭다운 선택 옵션: 최신구가 맨 위에 오도록 역순(No.N -> No.1) 배치 & 한글 구종 명칭 포함
     reversed_filtered_df = filtered_df.iloc[::-1]
